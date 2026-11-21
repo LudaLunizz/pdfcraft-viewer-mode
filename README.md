@@ -6,7 +6,7 @@ A "viewer mode" for [PdfCraft](https://github.com/storytold/pdfcraft): a strippe
 
 PdfCraft has no plugin system, so this ships as a source patch.
 
-## Status: v0.2.0; viewer mode tested in the headless UI harness and by hand in a real window (19 Nov 2026); "my set" and "open my set at startup" (21 Nov 2026) tested in the UI harness only so far
+## Status: v0.2.1; viewer mode tested in the headless UI harness and by hand in a real window (19 Nov 2026); "my set" and "open my set at startup" (21 Nov 2026) tested in the UI harness only so far. v0.2.1 (21 Nov 2026) fixes 5 bugs (#16), each with a UI-harness test, not yet tried by hand
 
 - **Turn on:** the eye button in the title bar, View ▸ Viewer mode, or Ctrl+E (⌘E on macOS). **Turn off:** the crossed-out eye in the strip, Ctrl+E or Esc.
 - **Tabs:** click to switch; close with the ×, a middle click, Ctrl+W or the right-click menu (unsaved changes ask first); Ctrl+Tab / Ctrl+Shift+Tab step through them.

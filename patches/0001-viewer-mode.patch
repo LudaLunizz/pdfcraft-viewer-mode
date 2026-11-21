@@ -29,7 +29,7 @@ index eae8a53e4..4f44c48f8 100644
      // a tab's right-click menu also splits right or down with any tab.
      c("view.split", "Split", VIEW, Some(Shortcut::cmd("\\")), Document, "columns-2"),
 diff --git a/crates/ui-egui/src/app.rs b/crates/ui-egui/src/app.rs
-index aa6f2224e..44cb648b3 100644
+index aa6f2224e..06aa96d3c 100644
 --- a/crates/ui-egui/src/app.rs
 +++ b/crates/ui-egui/src/app.rs
 @@ -330,6 +330,7 @@ impl PdfCraftApp {
@@ -40,7 +40,7 @@ index aa6f2224e..44cb648b3 100644
              protect_draft: Default::default(),
              text_style_draft: Default::default(),
              boxes_draft: Default::default(),
-@@ -432,7 +433,51 @@ impl PdfCraftApp {
+@@ -432,7 +433,93 @@ impl PdfCraftApp {
  
      /// Read mode and full screen hide the hotbar (the quick tools), and its tools window with it.
      pub(crate) fn hotbar_hidden(&self) -> bool {
@@ -50,12 +50,31 @@ index aa6f2224e..44cb648b3 100644
 +
 +    /// Toggle between Full UI and Viewer mode (clean multi-PDF viewer).
 +    pub fn toggle_viewer_mode(&mut self) {
-+        self.viewer_mode.toggle();
++        self.set_viewer_mode(!self.viewer_mode.enabled);
++    }
++
++    /// Viewer mode hides the quick tools, so entering it puts the current tool down, as Read mode
++    /// does: a hidden Highlight or Edit text tool would otherwise still act on a click.
++    pub fn set_viewer_mode(&mut self, on: bool) {
++        if on && !self.viewer_mode.enabled {
++            if matches!(self.quick_tool, crate::QuickTool::EditText | crate::QuickTool::AddText) {
++                self.put_down_edit_text();
++            } else {
++                self.quick_tool = crate::QuickTool::Select;
++            }
++        }
++        self.viewer_mode.enabled = on;
 +    }
 +
 +    /// Keep the files open now (those saved to disk) as "my set" for `open_viewer_set`.
 +    pub fn save_viewer_set(&mut self) {
-+        self.viewer_mode.set = self.open_session().files.into_iter().map(|f| f.path).collect();
++        let set: Vec<String> = self.open_session().files.into_iter().map(|f| f.path).collect();
++        // Only unsaved documents open: keep the set there is rather than wipe it.
++        if set.is_empty() {
++            self.notify("None of the open tabs is saved to disk: your set was kept");
++            return;
++        }
++        self.viewer_mode.set = set;
 +        let n = self.viewer_mode.set.len();
 +        self.notify(format!("{n} {} saved as your set", if n == 1 { "file" } else { "files" }));
 +    }
@@ -74,26 +93,49 @@ index aa6f2224e..44cb648b3 100644
 +            self.notify("No set saved yet: open your files, then Save open tabs as my set");
 +            return;
 +        }
-+        let first = self.views.len();
 +        let mut missing = 0;
++        let mut front = None;
 +        for path in self.viewer_mode.set.clone() {
 +            if std::path::Path::new(&path).is_file() {
 +                self.open_recent(&path);
++                front = front.or(Some(path));
 +            } else {
 +                missing += 1;
 +            }
 +        }
-+        if first < self.views.len() {
-+            self.active = Some(first);
++        // The set's first file comes to the front, whether its tab is new or was open already; the
++        // others still opening in the background must not take the front as each one lands.
++        if let Some(first) = &front {
++            use crate::app::files::same_file;
++            let set = &self.viewer_mode.set;
++            let behind = |path: Option<&str>| path.is_some_and(|path| !same_file(path, first) && set.iter().any(|s| same_file(s, path)));
++            for p in &mut self.pending_opens {
++                if behind(p.path.as_deref()) {
++                    p.activate = false;
++                }
++            }
++            // Past the worker's queue too (a set of more than 16), and one at its password prompt.
++            for d in &mut self.deferred_opens {
++                if behind(Some(&d.path)) {
++                    d.activate = false;
++                }
++            }
++            if let Some(prompt) = self.password_prompt.as_mut().filter(|p| behind(p.path.as_deref())) {
++                prompt.activate = false;
++            }
 +        }
-+        self.viewer_mode.enabled = true;
++        if let Some(i) = front.and_then(|p| self.tab_showing(&p)) {
++            self.active = Some(i);
++            self.combine_tab.focused = false;
++        }
++        self.set_viewer_mode(true);
 +        if missing > 0 {
 +            self.notify(format!("{missing} file(s) of your set were not found"));
 +        }
      }
  
      /// The pages are covered, and no page key reaches them, a menu click's included: by a dialog or
-@@ -873,6 +918,24 @@ impl PdfCraftApp {
+@@ -873,6 +960,26 @@ impl PdfCraftApp {
          if self.draws_window_frame() {
              window_controls::resize_edges(&ctx);
          }
@@ -104,6 +146,8 @@ index aa6f2224e..44cb648b3 100644
 +            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.pasteboard)).show(ui, |ui| {
 +                panes::page_area(self, ui);
 +            });
++            // FitWindow and CenterWindow too, or they wait and resize the window on leaving.
++            self.window_preferences_frame(&ctx);
 +            palette::show(self, &ctx);
 +            dialogs::show(self, &ctx);
 +            self.show_progress(&ctx);
@@ -118,17 +162,48 @@ index aa6f2224e..44cb648b3 100644
          chrome::tab_strip(self, ui);
          // A document can hide the toolbars, the menu and the panels around it in its tab (ISO
          // 32000-2 Table 147); the tab strip stays, and F8 brings the rest back (`viewer_prefs`).
+diff --git a/crates/ui-egui/src/app/files.rs b/crates/ui-egui/src/app/files.rs
+index 81c65a2b0..0a7a67e27 100644
+--- a/crates/ui-egui/src/app/files.rs
++++ b/crates/ui-egui/src/app/files.rs
+@@ -171,6 +171,11 @@ impl PdfCraftApp {
+         while self.deferred_opens.is_empty() && self.pending_opens.len() < self.open_slots() {
+             let Some(next) = queue.pop_front() else { break };
+             self.open_file_request(&next.path, next.after_open, next.then, next.display_override);
++            if !next.activate
++                && let Some(pending) = self.pending_opens.iter_mut().find(|p| p.path.as_deref().is_some_and(|p| same_file(p, &next.path)))
++            {
++                pending.activate = false;
++            }
+         }
+         // A file put back (the queue filled again) stays ahead of the ones behind it.
+         self.deferred_opens.append(&mut queue);
+@@ -956,7 +961,7 @@ impl PdfCraftApp {
+             // The worker queue is bounded. A long file list (a launch behind a password prompt,
+             // or many files at once) waits here, in order, and is submitted as opens finish.
+             if self.pending_opens.len() >= self.open_slots() || !self.deferred_opens.is_empty() {
+-                self.deferred_opens.push_back(DeferredOpen { path: path.to_string(), after_open, then, display_override });
++                self.deferred_opens.push_back(DeferredOpen { path: path.to_string(), after_open, then, display_override, activate: true });
+                 return OpenOutcome::Pending;
+             }
+             match self.schedule_open(OpenRequest {
 diff --git a/crates/ui-egui/src/app/keys.rs b/crates/ui-egui/src/app/keys.rs
-index d85470951..3957c3146 100644
+index d85470951..706b143e7 100644
 --- a/crates/ui-egui/src/app/keys.rs
 +++ b/crates/ui-egui/src/app/keys.rs
-@@ -60,6 +60,10 @@ impl PdfCraftApp {
+@@ -60,6 +60,16 @@ impl PdfCraftApp {
          {
              self.set_full_screen(ctx, false);
          }
-+        // Esc leaves viewer mode as it leaves full screen: after anything on the page took it.
-+        if self.viewer_mode.enabled && self.combine_tab.preview.is_none() && !page_takes_escape && self.page_keys.take(ctx, Key::Escape) {
-+            self.viewer_mode.enabled = false;
++        // Esc leaves viewer mode as it leaves full screen: after anything on the page took it, and
++        // not under full screen, which hides viewer mode (Esc there is full screen's alone).
++        if self.viewer_mode.enabled
++            && !self.full_screen
++            && self.combine_tab.preview.is_none()
++            && !page_takes_escape
++            && self.page_keys.take(ctx, Key::Escape)
++        {
++            self.set_viewer_mode(false);
 +        }
          if let Some(i) = self.active {
              if page_chords && chords {
@@ -358,7 +433,7 @@ index e67fe3680..b2eacd12c 100644
              crate::viewer_prefs::TOGGLE => self.toggle_interface(),
              "view.previous_view" | "view.next_view" => {
 diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
-index 6a6062093..81ba36560 100644
+index 6a6062093..e3af1e98e 100644
 --- a/crates/ui-egui/src/lib.rs
 +++ b/crates/ui-egui/src/lib.rs
 @@ -168,6 +168,7 @@ pub use platform::window_controls;
@@ -369,7 +444,16 @@ index 6a6062093..81ba36560 100644
  pub use state::{
      CommentClip, CustomDraft, Dialog, DuplicateDraft, LeftPanel, LinkOrigin, Mode, NumberDraft, OpenOutcome, PageClip, PagePropsDraft,
      PasswordPrompt, PendingLink, PendingRemoteLink, PropsTab, QuickTool, RECENT_FILES_DEFAULT, RECENT_FILES_MAX, RecentFile, RightPanel,
-@@ -867,4 +868,6 @@ pub struct PdfCraftApp {
+@@ -290,6 +291,8 @@ struct DeferredOpen {
+     after_open: Option<pdfcraft_render::RemoteDestination>,
+     then: Option<&'static str>,
+     display_override: Option<(canvas::PageLayout, bool)>,
++    /// Comes to the front once open; "Open my set" opens all but its first file behind.
++    activate: bool,
+ }
+ 
+ /// Puts `(html, plain_text)` on a clipboard; `false` when it couldn't, and plain-text Copy is
+@@ -867,4 +870,6 @@ pub struct PdfCraftApp {
      pub pending_window: Option<viewer_prefs::PendingWindow>,
      /// An absolute GoToR target waiting for approval, before any target-file I/O (#1364).
      pub pending_remote_link: Option<PendingRemoteLink>,
@@ -406,11 +490,24 @@ index ca3eeca90..ee1416e43 100644
              "view.side_panel" => Some(self.right.is_some()),
              "view.tools_pane" => Some(self.left_open),
              "view.split" => Some(self.panes.split.is_some()),
+diff --git a/crates/ui-egui/src/platform/open_worker/tests.rs b/crates/ui-egui/src/platform/open_worker/tests.rs
+index 7f8d73fa8..f3aef459f 100644
+--- a/crates/ui-egui/src/platform/open_worker/tests.rs
++++ b/crates/ui-egui/src/platform/open_worker/tests.rs
+@@ -919,7 +919,7 @@ fn a_repeated_waiting_open_keeps_the_tool_it_brings() {
+     let file = tool_open_file("deferred-tool", "pdf", &fixture(1));
+     let path = file.0.to_string_lossy().into_owned();
+     let mut app = PdfCraftApp::new();
+-    app.deferred_opens.push_back(crate::DeferredOpen { path: path.clone(), after_open: None, then: None, display_override: None });
++    app.deferred_opens.push_back(crate::DeferredOpen { path: path.clone(), after_open: None, then: None, display_override: None, activate: true });
+     assert_eq!(app.open_path_then(&path, Some("export.text")), crate::OpenOutcome::Pending);
+     assert_eq!(app.deferred_opens.len(), 1);
+     assert_eq!(app.deferred_opens.front().and_then(|d| d.then), Some("export.text"));
 diff --git a/crates/ui-egui/src/state.rs b/crates/ui-egui/src/state.rs
-index 8d524ad85..81ae67969 100644
+index 8d524ad85..a5edb6932 100644
 --- a/crates/ui-egui/src/state.rs
 +++ b/crates/ui-egui/src/state.rs
-@@ -495,3 +495,23 @@ pub enum OpenOutcome {
+@@ -495,3 +495,13 @@ pub enum OpenOutcome {
      /// The file could not be read or opened; the user was told.
      Failed,
  }
@@ -423,16 +520,6 @@ index 8d524ad85..81ae67969 100644
 +    pub set: Vec<String>,
 +    /// Open "my set" when PdfCraft starts without files to open.
 +    pub at_start: bool,
-+}
-+
-+impl ViewerMode {
-+    pub fn is_hidden(&self) -> bool {
-+        self.enabled
-+    }
-+
-+    pub fn toggle(&mut self) {
-+        self.enabled = !self.enabled;
-+    }
 +}
 diff --git a/crates/ui-egui/tests/it/main.rs b/crates/ui-egui/tests/it/main.rs
 index a5716e649..1c509a8ec 100644
@@ -447,10 +534,10 @@ index a5716e649..1c509a8ec 100644
  mod xfa;
 diff --git a/crates/ui-egui/tests/it/viewer_mode.rs b/crates/ui-egui/tests/it/viewer_mode.rs
 new file mode 100644
-index 000000000..ddd34dc8b
+index 000000000..eed9acbef
 --- /dev/null
 +++ b/crates/ui-egui/tests/it/viewer_mode.rs
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,283 @@
 +//! Viewer mode (`view.viewer_mode`): a tabs-and-pages window for reading several PDFs. A button in
 +//! the title bar, ⌘E (Ctrl+E) and the View menu turn it on; Esc, the strip's button and ⌘E turn it
 +//! off. Its tabs close with their ×, a middle click, ⌘W and the tab's menu, and Ctrl+Tab steps
@@ -647,5 +734,90 @@ index 000000000..ddd34dc8b
 +    later.open_viewer_set_at_start(&[]);
 +    assert_eq!(later.views.len(), 1);
 +    assert!(later.viewer_mode.enabled, "and in viewer mode");
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn entering_viewer_mode_puts_the_hidden_tool_down() {
++    let mut app = PdfCraftApp::new();
++    app.open_bytes("a.pdf", None, PDF.to_vec()).expect("opens");
++    app.quick_tool = pdfcraft_ui_egui::QuickTool::Hand;
++    app.execute("view.viewer_mode");
++    assert!(app.viewer_mode.enabled);
++    assert_eq!(app.quick_tool, pdfcraft_ui_egui::QuickTool::Select, "the tools are hidden, so none acts on a click");
++}
++
++#[test]
++fn saving_my_set_with_only_unsaved_tabs_keeps_the_set() {
++    let mut app = PdfCraftApp::new();
++    app.viewer_mode.set = vec!["/kept/a.pdf".into()];
++    app.open_bytes("new.pdf", None, PDF.to_vec()).expect("opens");
++    app.execute("view.viewer_set.save");
++    assert_eq!(app.viewer_mode.set, ["/kept/a.pdf"], "a tab with no file does not wipe the set");
++}
++
++#[test]
++fn my_set_brings_its_first_file_to_the_front_when_all_are_open() {
++    let dir = std::env::temp_dir().join(format!("pdfcraft-viewer-set-front-{}", std::process::id()));
++    std::fs::create_dir_all(&dir).unwrap();
++    let files: Vec<String> = ["a.pdf", "b.pdf"]
++        .iter()
++        .map(|n| {
++            let p = dir.join(n);
++            std::fs::write(&p, PDF).unwrap();
++            p.to_string_lossy().into_owned()
++        })
++        .collect();
++    let mut app = PdfCraftApp::new();
++    for f in &files {
++        app.open_path(f);
++    }
++    app.viewer_mode.set = files.clone();
++    app.active = None;
++    app.execute("view.viewer_set.open");
++    let front = app.active.and_then(|i| app.session.get(app.views[i].id)).and_then(|d| d.path.clone());
++    assert_eq!(front.as_deref(), Some(files[0].as_str()), "the set's first file, not its last");
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn escape_under_full_screen_leaves_viewer_mode_alone() {
++    let mut h = harness(&["a.pdf"]);
++    h.state_mut().execute("view.viewer_mode");
++    h.state_mut().full_screen_escape_exits = false;
++    h.state_mut().apply_full_screen(true);
++    h.run_steps(3);
++    h.key_press(Key::Escape);
++    h.run_steps(3);
++    assert!(h.state().viewer_mode.enabled, "Esc under full screen is full screen's alone");
++}
++
++#[test]
++fn my_set_keeps_its_first_file_in_front_while_the_rest_open_in_the_background() {
++    let dir = std::env::temp_dir().join(format!("pdfcraft-viewer-set-bg-{}", std::process::id()));
++    std::fs::create_dir_all(&dir).unwrap();
++    // More files than the open worker's queue (16) holds, so the last ones wait their turn.
++    let files: Vec<String> = (0..20)
++        .map(|n| {
++            let p = dir.join(format!("{n:02}.pdf"));
++            std::fs::write(&p, PDF).unwrap();
++            p.to_string_lossy().into_owned()
++        })
++        .collect();
++    let mut h = harness(&[]);
++    h.state_mut().viewer_mode.set = files.clone();
++    h.state_mut().execute("view.viewer_set.open");
++    for _ in 0..200 {
++        h.run_steps(1);
++        if h.state().views.len() == 20 {
++            break;
++        }
++        std::thread::sleep(std::time::Duration::from_millis(5));
++    }
++    h.run_steps(3);
++    let app = h.state();
++    assert_eq!(app.views.len(), 20, "the whole set opened");
++    let front = app.active.and_then(|i| app.session.get(app.views[i].id)).and_then(|d| d.path.clone());
++    assert_eq!(front.as_deref(), Some(files[0].as_str()), "the set's first file, whichever opened last");
 +    let _ = std::fs::remove_dir_all(&dir);
 +}
