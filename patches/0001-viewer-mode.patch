@@ -29,7 +29,7 @@ index eae8a53e4..4f44c48f8 100644
      // a tab's right-click menu also splits right or down with any tab.
      c("view.split", "Split", VIEW, Some(Shortcut::cmd("\\")), Document, "columns-2"),
 diff --git a/crates/ui-egui/src/app.rs b/crates/ui-egui/src/app.rs
-index aa6f2224e..06aa96d3c 100644
+index aa6f2224e..507c6d66d 100644
 --- a/crates/ui-egui/src/app.rs
 +++ b/crates/ui-egui/src/app.rs
 @@ -330,6 +330,7 @@ impl PdfCraftApp {
@@ -40,7 +40,7 @@ index aa6f2224e..06aa96d3c 100644
              protect_draft: Default::default(),
              text_style_draft: Default::default(),
              boxes_draft: Default::default(),
-@@ -432,7 +433,93 @@ impl PdfCraftApp {
+@@ -432,7 +433,95 @@ impl PdfCraftApp {
  
      /// Read mode and full screen hide the hotbar (the quick tools), and its tools window with it.
      pub(crate) fn hotbar_hidden(&self) -> bool {
@@ -104,7 +104,9 @@ index aa6f2224e..06aa96d3c 100644
 +            }
 +        }
 +        // The set's first file comes to the front, whether its tab is new or was open already; the
-+        // others still opening in the background must not take the front as each one lands.
++        // others still opening in the background must not take the front as each one lands. The web
++        // build opens no files from paths, so it has no background opens.
++        #[cfg(not(target_arch = "wasm32"))]
 +        if let Some(first) = &front {
 +            use crate::app::files::same_file;
 +            let set = &self.viewer_mode.set;
@@ -135,7 +137,7 @@ index aa6f2224e..06aa96d3c 100644
      }
  
      /// The pages are covered, and no page key reaches them, a menu click's included: by a dialog or
-@@ -873,6 +960,26 @@ impl PdfCraftApp {
+@@ -873,6 +962,26 @@ impl PdfCraftApp {
          if self.draws_window_frame() {
              window_controls::resize_edges(&ctx);
          }
