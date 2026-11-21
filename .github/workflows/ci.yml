@@ -1,8 +1,9 @@
 name: CI
 
 # The patch must apply to the PdfCraft commit it was made against (pinned in
-# scripts/check-patch.sh). A weekly run also tries PdfCraft's current main, as an
-# early warning that the patch needs a rebase.
+# scripts/check-patch.sh), build for the web (wasm) and pass its viewer mode tests there.
+# A weekly run also tries PdfCraft's current main, as an early warning that the patch
+# needs a rebase.
 on:
   push:
     branches: [main]
@@ -25,6 +26,35 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: scripts/check-patch.sh pinned
+
+  # Applying is not enough: v0.2.1 applied cleanly and broke the web build (#18).
+  build:
+    name: Builds (desktop + wasm) and passes its tests on the pinned commit
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: System libraries for egui, winit and rfd
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev \
+            libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev
+      - name: Rust stable with the wasm target
+        run: |
+          rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
+          rustup default stable
+      - run: scripts/check-patch.sh pinned "$RUNNER_TEMP"
+      - name: Web (wasm) build
+        working-directory: ${{ runner.temp }}/pdfcraft
+        run: cargo check --locked -p pdfcraft-ui-egui --target wasm32-unknown-unknown
+      - name: Viewer mode tests
+        working-directory: ${{ runner.temp }}/pdfcraft
+        run: cargo test --locked -p pdfcraft-ui-egui --test it viewer_mode
 
   upstream-main:
     name: Applies to PdfCraft main (warning only)
