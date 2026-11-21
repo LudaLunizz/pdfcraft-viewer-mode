@@ -11,7 +11,7 @@ index a2a4e4410..89e186937 100644
          }
          for (k, v) in options {
 diff --git a/crates/engine/src/commands.rs b/crates/engine/src/commands.rs
-index eae8a53e4..4f44c48f8 100644
+index eae8a53e4..694cd48eb 100644
 --- a/crates/engine/src/commands.rs
 +++ b/crates/engine/src/commands.rs
 @@ -241,6 +241,13 @@ pub const COMMANDS: &[CommandSpec] = &[
@@ -23,7 +23,7 @@ index eae8a53e4..4f44c48f8 100644
 +    c("view.viewer_mode", "Viewer mode", VIEW, Some(Shortcut::cmd("E")), Nothing, "eye"),
 +    // The files read every day, opened together in viewer mode in one click.
 +    c("view.viewer_set.open", "Open my set in viewer mode", VIEW, None, Nothing, "files"),
-+    c("view.viewer_set.save", "Save open tabs as my set", VIEW, None, Document, "bookmark-plus"),
++    c("view.viewer_set.save", "Save open tabs as my set", VIEW, None, Nothing, "bookmark-plus"),
 +    c("view.viewer_set.at_start", "Open my set at startup", VIEW, None, Nothing, "clock"),
      // Split view (Acrobat's Window ▸ Split): the current document in two panes, or back to one;
      // a tab's right-click menu also splits right or down with any tab.
@@ -506,7 +506,7 @@ index 7f8d73fa8..f3aef459f 100644
      assert_eq!(app.deferred_opens.len(), 1);
      assert_eq!(app.deferred_opens.front().and_then(|d| d.then), Some("export.text"));
 diff --git a/crates/ui-egui/src/state.rs b/crates/ui-egui/src/state.rs
-index 8d524ad85..a5edb6932 100644
+index 8d524ad85..c8512c999 100644
 --- a/crates/ui-egui/src/state.rs
 +++ b/crates/ui-egui/src/state.rs
 @@ -495,3 +495,13 @@ pub enum OpenOutcome {
@@ -515,7 +515,7 @@ index 8d524ad85..a5edb6932 100644
  }
 +
 +/// Viewer mode toggle state for the clean multi-PDF viewer.
-+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
++#[derive(Default)]
 +pub struct ViewerMode {
 +    pub enabled: bool,
 +    /// "My set": the files saved to open together in viewer mode, absolute paths, kept in settings.
@@ -536,10 +536,10 @@ index a5716e649..1c509a8ec 100644
  mod xfa;
 diff --git a/crates/ui-egui/tests/it/viewer_mode.rs b/crates/ui-egui/tests/it/viewer_mode.rs
 new file mode 100644
-index 000000000..eed9acbef
+index 000000000..bb64e8469
 --- /dev/null
 +++ b/crates/ui-egui/tests/it/viewer_mode.rs
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,299 @@
 +//! Viewer mode (`view.viewer_mode`): a tabs-and-pages window for reading several PDFs. A button in
 +//! the title bar, ⌘E (Ctrl+E) and the View menu turn it on; Esc, the strip's button and ⌘E turn it
 +//! off. Its tabs close with their ×, a middle click, ⌘W and the tab's menu, and Ctrl+Tab steps
@@ -821,5 +821,21 @@ index 000000000..eed9acbef
 +    assert_eq!(app.views.len(), 20, "the whole set opened");
 +    let front = app.active.and_then(|i| app.session.get(app.views[i].id)).and_then(|d| d.path.clone());
 +    assert_eq!(front.as_deref(), Some(files[0].as_str()), "the set's first file, whichever opened last");
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn my_set_saves_from_the_home_tab() {
++    let dir = std::env::temp_dir().join(format!("pdfcraft-viewer-set-home-{}", std::process::id()));
++    std::fs::create_dir_all(&dir).unwrap();
++    let a = dir.join("a.pdf");
++    std::fs::write(&a, PDF).unwrap();
++    let a = a.to_string_lossy().into_owned();
++    let mut app = PdfCraftApp::new();
++    app.open_path(&a);
++    // Home in front: no active document, but a tab is open.
++    app.active = None;
++    assert!(app.execute("view.viewer_set.save"), "not refused for want of a document");
++    assert_eq!(app.viewer_mode.set, [a]);
 +    let _ = std::fs::remove_dir_all(&dir);
 +}
